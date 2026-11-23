@@ -1,0 +1,52 @@
+name: Sincronizar menú Soda El Patio
+
+# El QR impreso de la soda lee el archivo estático api/menu/soda-el-patio.
+# Este workflow lo mantiene igualito al panel (base de datos Turso):
+# cada 30 minutos baja el menú en vivo del panel y, solo si cambió
+# algún producto, precio o dato (ignorando el campo `actualizado`,
+# que cambia en cada llamada), lo publica. GitHub Pages lo sirve
+# solo con el push, sin reimprimir el QR.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bajar menú en vivo del panel
+        run: |
+          set -e
+          curl -fsSL "https://menuya-panel-2c181fd0.easyhost.fun/api/menu/soda-el-patio" -o /tmp/menu-nuevo.json
+          python3 - <<'PY'
+          import json, shutil
+          nuevo = json.load(open('/tmp/menu-nuevo.json'))
+          assert nuevo.get('negocio', {}).get('slug') == 'soda-el-patio', 'el panel no devolvió el menú de Soda El Patio'
+          assert isinstance(nuevo.get('categorias'), list) and nuevo['categorias'], 'el panel devolvió categorías vacías'
+          viejo = json.load(open('api/menu/soda-el-patio'))
+          datos = lambda d: {k: v for k, v in d.items() if k != 'actualizado'}
+          if datos(nuevo) == datos(viejo):
+              print('sin cambios en el menú, no se publica nada')
+              open('/tmp/hay-cambio.txt', 'w').write('no')
+          else:
+              shutil.copyfile('/tmp/menu-nuevo.json', 'api/menu/soda-el-patio')
+              print('menú cambió, se publica la versión nueva')
+              open('/tmp/hay-cambio.txt', 'w').write('si')
+          PY
+
+      - name: Publicar cambio
+        run: |
+          if [ "$(cat /tmp/hay-cambio.txt)" = "si" ]; then
+            git config user.name "menuya-sync"
+            git config user.email "menuya-sync@users.noreply.github.com"
+            git add api/menu/soda-el-patio
+            git commit -m "sync: menú Soda El Patio desde el panel"
+            git push
+          fi
